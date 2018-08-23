@@ -1,0 +1,50 @@
+--2017年家自车投保商业险的保单中未投保车损险的保单
+create table nzz_cn001 as
+select distinct policyno from nzz_c1 where policyno not in
+(select policyno from nzz_c1 where kindcode='001')
+order by policyno
+
+--提取未投保车损险的车辆属性
+
+create table nzz_kmeans_001 as
+select a.policyno,b.useyears,round(b.purchaseprice/10000,2) purchaseprice,round(b.actualvalue/10000,2) actualvalue from nzz_cn001 a left join
+ods_citemcar b on a.policyno=b.policyno
+
+--导入200数据库，在200oralce执行
+create table nzz_kmeans_001 as
+select * from nzz_kmeans_001@fensheng_conn
+
+--执行聚类程序kmeans_car_n001.py，先执行describe,得出数据均值、中位数、最大及最小值，对数据进行初步探索
+--对数据进行清洗，剔除超大值（中位数是7万，但最大值为618万）
+--将聚类结果写入200数据库nzz_kmeans_car_n001
+
+--对聚类结果进行分析
+select cc.聚类类别,count(*),avg(cc.purchaseprice),avg(cc.useyears) 
+from nzz_kmeans_car_n001 cc group by cc.聚类类别
+
+--聚类分出了三类：1、年限较短，且价格较低（12.7万辆）；2、年限较长，且价格较低（9.7万辆）；3、年限不算长，且价格较高（2.4万辆）
+
+可以看出，第三类占比不高，但是其保单对应的客户是很有必要投保车损险的，续保时可重点关注并推荐车损险
+
+可以重点提取车价在10万元以上，且车龄在5年以下的保单
+
+select * from nzz_test_kmeans cn where  cn.useyears<=5 and cn.purchaseprice>=10
+
+
+
+--投保百万三者聚类分析
+create table nzz_c100 as
+select distinct policyno from nzz_c1 a where kindcode='100'
+
+create table nzz_kmeans_100 as
+select a.policyno,b.useyears,round(b.purchaseprice/10000,2) purchaseprice,round(b.actualvalue/10000,2) actualvalue
+ from nzz_c100 a left join
+ods_citemcar b on a.policyno=b.policyno
+
+--得到共性：使用年限较短
+--从分省库查询百万三者保单使用年检平均值为2.9
+
+
+
+
+

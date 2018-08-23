@@ -1,0 +1,193 @@
+--2017年全量家自车商业险保单
+
+--create table nzz_c1 as 
+--select a.policyno,b.kindcode,b.kindname
+--from
+--(
+--select w.policyno from web_list_cmainorigin w
+--left join ods_citemcar ci on ci.policyno=w.policyno where  w.underwriteenddate --between date'2017-1-1' and date'2017-12-31'
+--and w.riskcode='0511' and ci.usenaturecode = '8A'
+--)a
+--left join 
+--SGA_PRPCITEMKIND b
+--on a.policyno=b.policyno
+
+create table nzz_c1 as 
+select policyno,kindcode,kindname,a.premium,amount
+from SGA_PRPCITEMKIND a
+where exists 
+(select 1 from ods_citemcar o where a.policyno=o.policyno and o.usenaturecode='8A')
+and a.riskcode='0511'
+and a.startdate between date'2017-1-1' and date'2017-12-31'
+and a.kindname not like '%不计免赔%'
+and kindcode!='301'
+and kindcode!='302'
+and a.enddate-a.startdate>360
+
+
+  --将百万三者作为单独的险别进行分析
+ insert into nzz_c1 
+  select policyno,'100','百万三者',premium,1000000
+  from nzz_c1 
+  where amount=1000000 and kindcode='002'
+  
+select distinct kindcode from nzz_c1 order by kindcode
+
+--家自车三者险百万以下平均保费952，百万三者平均保费1284
+--列转行，生产kindcode的0,1矩阵
+create table nzz_test_apriori as 
+select * from  
+  (select distinct policyno,kindcode from nzz_c1)  
+pivot(  
+  sum(1) for kindcode
+   in (  
+'001' k001,
+'002' k002,
+'003' k003,
+'006' k006,
+'007' k007,
+'201' k201,
+'202' k202,
+'203' k203,
+'205' k205,
+'206' k206,
+'210' k210,
+'211' k211,
+'215' k215,
+'100' k100'
+  )  
+) order by policyno
+
+--200数据库下执行，将数据导入200
+create table nzz_test_apriori as
+select * from nzz_test_apriori@fensheng_conn
+
+--分省库
+select count(distinct policyno) from nzz_c1 --保单总数689962
+
+--各险别保单数
+select kindcode,count(*)
+from nzz_c1
+group by kindcode
+
+create table nzz_c3 as
+select kindcode,count(*) cnt,689962 as pcnt
+from nzz_c1
+group by kindcode
+
+--计算各险别发生概率
+
+create table nzz_c31 as
+select kindcode,cnt,pcnt,round(cnt/pcnt,2) zb from nzz_c3
+
+--create table nzz_c32 as
+--select a.*,v.kindname from nzz_c31 a left join (select * from cd_kind where --riskcode='0511') v on a.kindcode=v.kindcode order by zb desc
+
+--update nzz_c32 set kindname='百万三者' where kindname is null
+
+--因单独投保的险别中最小投保概率为0.01，故选择最小支持度为0.01
+#-*- coding: utf-8 -*-
+#使用Apriori算法挖掘家自车险别关联规则
+from __future__ import print_function
+from sqlalchemy import create_engine
+import pandas as pd
+from apriori111 import * #导入自行编写的apriori函数，最后的排序由sort改为sort_values
+# 解决oracle中文乱码问题
+import os
+os.environ['NLS_LANG'] = 'SIMPLIFIED CHINESE_CHINA.UTF8'
+
+outputfile = './tmp/apriori_car_kind.xls' #结果文件
+#读200数据库，数据从分省库先导到200 
+engine = create_engine(
+    'oracle+cx_oracle://sdclic:password@9.216.6.200:1521/SDORACLE')
+df = pd.read_sql('SELECT * FROM nzz_test_apriori ', engine)
+print(df)
+data=df.fillna(0)#将空值置为0，得到0-1矩阵
+print(data)
+del data['policyno'] #删除保单号，只剩kindcode
+support = 0.01 #最小支持度，考虑到因单独投保的险别中最小投保概率为0.01
+confidence = 0.2 #最小置信度
+ms = '---' #连接符，默认'--'，用来区分不同元素，如A--B。需要保证原始表格中不含有该字符
+
+find_rule(data, support, confidence, ms).to_excel(outputfile) #保存结果
+
+#分割出最右侧险别并与原表拼接
+from __future__ import print_function
+import pandas as pd
+
+inputfile = './tmp/apriori_car_kind.xls' #结果文件
+outputfile = './tmp/apriori_car_kind_split.xls' #结果文件
+data = pd.read_excel(inputfile, header = None)
+print(data.iloc[1,0])
+
+data1=data.iloc[1:,:]
+#data2=pd.DataFrame(columns = ["k"]) #创建一个空的dataframe
+data1['k']='1'#增加一列，初始化为1
+print(len(data1))
+
+data1.columns = ['r','s','c','k']#重命名列
+
+#data1.iloc[0,3]=data1.iloc[0,3].replace('1','2')
+#将k列置为r列分词后的最后一个kindcode
+for i in range(len(data1)):
+    #data2 = data2.append(data1.iloc[i,0].split('---')[0])
+    data1.iloc[i,3]=data1.iloc[i,3].replace('1',data1.iloc[i,0].split('---')[len(data1.iloc[i,0].split('---'))-1])#逐行分词取最后个kindcode
+    #print(data1.iloc[i,3])
+
+data1.to_excel(outputfile) #保存结果 要将结果导入数据库，与下面求出的各险种单独占比连接
+
+
+
+
+--将apriori算法生成的结果文件apriori_car_kind_split.xls导入数据库
+create table nzz_c4 as
+select 'k001---k002---k003---k006---k302---k303---k305---k301' r,'0.243364357' s,'0.999868165' c,'k002' k
+from dual
+where 1=0
+
+
+--将算法生成结果与各险别单独投保概率结果拼接（险别前增加了字符'k',需截断）
+--关联规则长度限定12个字符之内
+create table nzz_c5 as
+select * from nzz_c4 a left join nzz_c31 b
+on trim(substr(a.k,2,3))=trim(b.kindcode)
+where length(trim(a.r))<12
+
+
+--得到K列险别再R列关联规则下投保比例增幅CC，单独投保比例为ZB
+--create table nzz_c6 as
+--select a.*,c-zb as cc from nzz_c5 a
+--order by c-zb desc
+
+--找出有意义的关联规则，剔除提升度小于等于1的险别
+--关联规则，左部代码，右部代码，左部名称，右部名称，右部单独投保概率，置信度P(R|L)，提升度，提升比例(C-ZB),支持度，右部单独投保件数，总保单件数
+
+create table nzz_c6 as
+select a.r Relation,substr(a.r,2,3) as lkindcode,a.kindcode rkindcode, 
+case when substr(a.r,2,3)=100 then '百万三者' else c.kindname end as lkindname,
+case when a.kindcode=100 then '百万三者' else d.kindname end as rkindname,a.zb singkindrate,
+a.c Confidence,round(a.c/a.zb,2) lift ,(a.c-a.zb) as uprate,a.s Support,
+a.cnt singkindcount,a.pcnt allpolicycont
+from nzz_c5 a left join (select * from cd_kind where riskcode='0511') c
+on substr(a.r,2,3)=c.kindcode
+left join (select * from cd_kind where riskcode='0511') d
+on a.kindcode=d.kindcode
+where round(a.c/a.zb,2)>1
+order by lift desc
+
+
+select * from nzz_c7 
+where singkindrate<0.9 and uprate>0.1 order by up desc
+
+--家自车盗抢险平均保费425
+--家自车自燃险平均保费122
+--结论：共716773份保单
+1、车上人员责任保险（驾驶人）和车上人员责任保险（乘客）的置信度很高，即关联性很强，
+可以为单独购买以上任意险别的客户推荐另一种险别（乘客平均160元一份，增收约700万）
+2、购买全车盗抢险的客户购买自燃损失险的几率上升较大，可以为购买全车盗抢险的客户推荐自燃险
+若购买自燃险的客户都购买盗抢险，则增收700多万保费
+3、购买车上人员责任保险(乘客)的客户购买车损险的几率上升较大
+4、购买车损险的客户占比为65%，不算高，后续通过聚类分析此类用户，找出具有潜在需求的客户
+
+车身划痕->玻璃破碎','自燃->盗抢','驾驶人->乘客', '车损->盗抢', '车损->驾驶人
+12247 0.42   k201 257元 132万 --- 53391 0.33 k007 430元 757万 ---  241661 0.18  k006  90元 391万
